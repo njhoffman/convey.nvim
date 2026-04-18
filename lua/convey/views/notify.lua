@@ -69,6 +69,16 @@ local notify_handler = function(provider_name, positions, curr_idx, opts)
   local show_prefix = opts.listeners and #opts.listeners > 1
   local multi_buf = utils.is_multi_buffer(positions)
 
+  -- For the non-range case, pre-pad "lnum:col" so the ':' separators align
+  -- vertically across rows.
+  local max_lnum_w, max_col_w = 0, 0
+  if not use_range then
+    for _, pos in ipairs(truncated) do
+      max_lnum_w = math.max(max_lnum_w, #tostring(pos.lnum))
+      max_col_w = math.max(max_col_w, #tostring(pos.col))
+    end
+  end
+
   for _, pos in ipairs(truncated) do
     local line_text = ""
     if pos.bufnr and vim.api.nvim_buf_is_valid(pos.bufnr) then
@@ -90,41 +100,43 @@ local notify_handler = function(provider_name, positions, curr_idx, opts)
     if use_range then
       table.insert(row, { utils.format_pos(pos), hls.number })
     else
-      table.insert(row, { tostring(pos.lnum), hls.number })
-      table.insert(row, { tostring(pos.col), hls.number })
+      local lnum_s = tostring(pos.lnum)
+      local col_s = tostring(pos.col)
+      local pos_s = string.rep(" ", max_lnum_w - #lnum_s)
+        .. lnum_s
+        .. ":"
+        .. col_s
+        .. string.rep(" ", max_col_w - #col_s)
+      table.insert(row, { pos_s, hls.number })
     end
     table.insert(row, { line_text, hls.string })
     table.insert(rows, row)
   end
 
   local headers = { "" }
-  local align = { "center" }
+  local columns_spec = { { align = "center" } }
   if show_prefix then
     table.insert(headers, "")
-    table.insert(align, "center")
+    table.insert(columns_spec, { align = "center" })
   end
   if multi_buf then
     table.insert(headers, "buf")
-    table.insert(align, "center")
+    table.insert(columns_spec, { align = "center" })
   end
-  if use_range then
-    table.insert(headers, "pos")
-    table.insert(align, "center")
-  else
-    table.insert(headers, "line")
-    table.insert(align, "center")
-    table.insert(headers, "col")
-    table.insert(align, "center")
-  end
+  table.insert(headers, "pos")
+  table.insert(columns_spec, { align = "center" })
   table.insert(headers, "text")
-  table.insert(align, nil)
+  table.insert(columns_spec, { align = "left" })
 
-  local lines, highlights = utils.build_highlight_table(vim.fn.reverse(rows), {
-    headers = headers,
-    align = align,
-  })
+  local header_row = {}
+  for _, h in ipairs(headers) do
+    table.insert(header_row, { h, "Title" })
+  end
 
-  local notif = notify(lines, 3, {
+  local payload_rows = vim.fn.reverse(rows)
+  table.insert(payload_rows, 1, header_row)
+
+  local notif = notify("", 3, {
     timeout = false,
     title = provider_name,
     on_close = function()
@@ -147,7 +159,14 @@ local notify_handler = function(provider_name, positions, curr_idx, opts)
       end, 200)
     end,
     replace = state.notify_id,
-    highlights = { body = highlights },
+    payload = {
+      kind = "columns",
+      data = {
+        rows = payload_rows,
+        columns = columns_spec,
+        separator = "  ",
+      },
+    },
   })
   state.notify_id = notif.id
 end

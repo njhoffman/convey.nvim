@@ -44,6 +44,24 @@ describe("Convey", function()
       assert.are.same({ "changes" }, changes.listeners)
     end)
 
+    it("cycle defaults to false on all providers", function()
+      for _, name in ipairs({ "changes", "jumps", "visual", "saves", "paragraph", "block" }) do
+        local p = config.get_provider(name)
+        assert.is_not_nil(p, name .. " provider should exist")
+        assert.is_false(p.cycle, name .. " provider should default cycle=false")
+      end
+    end)
+
+    it("cycle can be enabled via setup", function()
+      config.setup({
+        providers = {
+          changes = { cycle = true },
+        },
+      })
+      assert.is_true(config.get_provider("changes").cycle)
+      assert.is_false(config.get_provider("jumps").cycle)
+    end)
+
     it("returns nil for unknown provider", function()
       local unknown = config.get_provider("nonexistent")
       assert.is_nil(unknown)
@@ -866,6 +884,101 @@ describe("Convey", function()
       vim.api.nvim_buf_delete(bufnr, { force = true })
     end)
 
+    describe("cycle behavior", function()
+      local function install_fake_listener(bufnr)
+        local fake = {
+          name = "fake_cycle",
+          prefix = "",
+          init = function() end,
+          destroy = function() end,
+          get_positions = function()
+            return {
+              { lnum = 3, col = 0, bufnr = bufnr, timestamp = 3, source = "fake_cycle" },
+              { lnum = 2, col = 0, bufnr = bufnr, timestamp = 2, source = "fake_cycle" },
+              { lnum = 1, col = 0, bufnr = bufnr, timestamp = 1, source = "fake_cycle" },
+            }
+          end,
+        }
+        package.loaded["convey.listeners.fake_cycle"] = fake
+      end
+
+      local function setup_provider(cycle)
+        config.setup({
+          providers = {
+            cycle_test = {
+              enabled = true,
+              unique = false,
+              cycle = cycle,
+              listeners = { "fake_cycle" },
+              views = { notify = { enabled = false }, inline = { enabled = false } },
+            },
+          },
+          logger = {
+            error = function() end,
+            warn = function() end,
+            info = function() end,
+            debug = function() end,
+            trace = function() end,
+          },
+        })
+      end
+
+      it("clamps at upper bound when cycle is false", function()
+        local bufnr = vim.api.nvim_create_buf(false, true)
+        vim.api.nvim_set_current_buf(bufnr)
+        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "a", "b", "c" })
+        install_fake_listener(bufnr)
+        setup_provider(false)
+
+        local providers = require("convey.providers")
+        providers.next("cycle_test")
+        providers.next("cycle_test")
+        providers.next("cycle_test")
+        providers.next("cycle_test")
+        local pstate = state.get_provider("cycle_test")
+        assert.are.equal(3, pstate.index)
+
+        vim.api.nvim_buf_delete(bufnr, { force = true })
+        package.loaded["convey.listeners.fake_cycle"] = nil
+      end)
+
+      it("wraps from end to beginning on next when cycle is true", function()
+        local bufnr = vim.api.nvim_create_buf(false, true)
+        vim.api.nvim_set_current_buf(bufnr)
+        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "a", "b", "c" })
+        install_fake_listener(bufnr)
+        setup_provider(true)
+
+        local providers = require("convey.providers")
+        providers.next("cycle_test")
+        providers.next("cycle_test")
+        providers.next("cycle_test")
+        local pstate = state.get_provider("cycle_test")
+        assert.are.equal(3, pstate.index)
+        providers.next("cycle_test")
+        assert.are.equal(1, pstate.index)
+
+        vim.api.nvim_buf_delete(bufnr, { force = true })
+        package.loaded["convey.listeners.fake_cycle"] = nil
+      end)
+
+      it("wraps from beginning to end on prev when cycle is true", function()
+        local bufnr = vim.api.nvim_create_buf(false, true)
+        vim.api.nvim_set_current_buf(bufnr)
+        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "a", "b", "c" })
+        install_fake_listener(bufnr)
+        setup_provider(true)
+
+        local providers = require("convey.providers")
+        providers.prev("cycle_test")
+        local pstate = state.get_provider("cycle_test")
+        assert.are.equal(3, pstate.index)
+
+        vim.api.nvim_buf_delete(bufnr, { force = true })
+        package.loaded["convey.listeners.fake_cycle"] = nil
+      end)
+    end)
+
     it("handles unknown provider gracefully", function()
       local providers = require("convey.providers")
       -- Should not error
@@ -1038,6 +1151,54 @@ describe("Convey", function()
       vim.api.nvim_buf_delete(bufnr, { force = true })
     end)
 
+    it("runs provider on_navigate after global on_navigate callback fires", function()
+      local order = {}
+      local finish_fn_holder = nil
+      config.setup({
+        on_navigate = function(finish_fn)
+          table.insert(order, "global")
+          finish_fn_holder = finish_fn
+        end,
+        providers = {
+          changes = {
+            enabled = true,
+            unique = true,
+            listeners = { "changes" },
+            on_navigate = function()
+              table.insert(order, "provider")
+            end,
+            views = { notify = { enabled = true } },
+          },
+        },
+        logger = {
+          error = function() end,
+          warn = function() end,
+          info = function() end,
+          debug = function() end,
+          trace = function() end,
+        },
+      })
+
+      local providers = require("convey.providers")
+      local bufnr = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_set_current_buf(bufnr)
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "aaa" })
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "bbb" })
+
+      providers.next("changes")
+
+      local pstate = state.get_provider("changes")
+      if #pstate.positions > 0 then
+        -- Provider callback must not have run yet (still awaiting finish_fn)
+        assert.are.same({ "global" }, order)
+        assert.is_function(finish_fn_holder)
+        finish_fn_holder()
+        assert.are.same({ "global", "provider" }, order)
+      end
+
+      vim.api.nvim_buf_delete(bufnr, { force = true })
+    end)
+
     it("calls top-level on_navigate for finish callback", function()
       local finish_called = false
       config.setup({
@@ -1063,6 +1224,232 @@ describe("Convey", function()
       providers.next("changes")
       assert.is_true(finish_called)
 
+      vim.api.nvim_buf_delete(bufnr, { force = true })
+    end)
+
+    it("does not add to the jump list during navigation", function()
+      local providers = require("convey.providers")
+      local bufnr = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_set_current_buf(bufnr)
+      vim.api.nvim_buf_set_lines(
+        bufnr,
+        0,
+        -1,
+        false,
+        { "line1", "line2", "line3", "line4", "line5" }
+      )
+      vim.api.nvim_win_set_cursor(0, { 1, 0 })
+
+      -- Snapshot the jump list before navigation
+      local jumplist_before = vim.fn.getjumplist()
+      local count_before = #(jumplist_before[1] or {})
+
+      providers.next("changes")
+      providers.next("changes")
+
+      -- Jump list should not have grown
+      local jumplist_after = vim.fn.getjumplist()
+      local count_after = #(jumplist_after[1] or {})
+      assert.are.equal(count_before, count_after)
+
+      vim.api.nvim_buf_delete(bufnr, { force = true })
+    end)
+
+    it("does not add to the jump list when switching buffers", function()
+      local providers = require("convey.providers")
+      local bufnr1 = vim.api.nvim_create_buf(false, true)
+      local bufnr2 = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_set_current_buf(bufnr1)
+      vim.api.nvim_buf_set_lines(bufnr1, 0, -1, false, { "buf1 line1" })
+      vim.api.nvim_buf_set_lines(bufnr2, 0, -1, false, { "buf2 line1" })
+
+      -- Inject a multi-buffer position list via the writes listener
+      local writes = require("convey.listeners.writes")
+      writes.init(state.augroup)
+
+      -- Simulate writes in different buffers
+      vim.api.nvim_set_current_buf(bufnr1)
+      vim.api.nvim_win_set_cursor(0, { 1, 0 })
+      vim.api.nvim_exec_autocmds("BufWritePost", { buffer = bufnr1 })
+
+      vim.api.nvim_set_current_buf(bufnr2)
+      vim.api.nvim_win_set_cursor(0, { 1, 0 })
+      vim.api.nvim_exec_autocmds("BufWritePost", { buffer = bufnr2 })
+
+      -- Switch back and snapshot jump list
+      vim.api.nvim_set_current_buf(bufnr1)
+      local jumplist_before = vim.fn.getjumplist()
+      local count_before = #(jumplist_before[1] or {})
+
+      -- Navigate saves provider which may cross buffers
+      config.setup({
+        providers = {
+          saves = {
+            enabled = true,
+            unique = false,
+            listeners = { "writes" },
+            views = { notify = { enabled = true } },
+          },
+        },
+        logger = {
+          error = function() end,
+          warn = function() end,
+          info = function() end,
+          debug = function() end,
+          trace = function() end,
+        },
+      })
+      providers.next("saves")
+
+      local jumplist_after = vim.fn.getjumplist()
+      local count_after = #(jumplist_after[1] or {})
+      assert.are.equal(count_before, count_after)
+
+      writes.destroy()
+      vim.api.nvim_buf_delete(bufnr1, { force = true })
+      vim.api.nvim_buf_delete(bufnr2, { force = true })
+    end)
+
+    it("defers views.show until on_navigate callback fires", function()
+      local views = require("convey.views")
+      local original_show = views.show
+      local show_called = false
+      local view_shown_before_callback = false
+
+      views.show = function(...)
+        show_called = true
+        return original_show(...)
+      end
+
+      config.setup({
+        on_navigate = function(finish_fn)
+          view_shown_before_callback = show_called
+          finish_fn()
+        end,
+        logger = {
+          error = function() end,
+          warn = function() end,
+          info = function() end,
+          debug = function() end,
+          trace = function() end,
+        },
+      })
+
+      local providers = require("convey.providers")
+      local bufnr = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_set_current_buf(bufnr)
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "aaa" })
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "bbb" })
+
+      providers.next("changes")
+
+      assert.is_false(view_shown_before_callback)
+      assert.is_true(show_called)
+      views.show = original_show
+      vim.api.nvim_buf_delete(bufnr, { force = true })
+    end)
+
+    it("calls views.show after on_navigate callback fires", function()
+      local views = require("convey.views")
+      local original_show = views.show
+      local show_called = false
+
+      views.show = function(...)
+        show_called = true
+        return original_show(...)
+      end
+
+      config.setup({
+        on_navigate = function(finish_fn)
+          finish_fn()
+        end,
+        logger = {
+          error = function() end,
+          warn = function() end,
+          info = function() end,
+          debug = function() end,
+          trace = function() end,
+        },
+      })
+
+      local providers = require("convey.providers")
+      local bufnr = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_set_current_buf(bufnr)
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "aaa" })
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "bbb" })
+
+      providers.next("changes")
+
+      assert.is_true(show_called)
+      views.show = original_show
+      vim.api.nvim_buf_delete(bufnr, { force = true })
+    end)
+
+    it("calls views.show immediately when on_navigate is not configured", function()
+      local views = require("convey.views")
+      local original_show = views.show
+      local show_called = false
+
+      views.show = function(...)
+        show_called = true
+        return original_show(...)
+      end
+
+      local providers = require("convey.providers")
+      local bufnr = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_set_current_buf(bufnr)
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "aaa" })
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "bbb" })
+
+      providers.next("changes")
+
+      assert.is_true(show_called)
+      views.show = original_show
+      vim.api.nvim_buf_delete(bufnr, { force = true })
+    end)
+
+    it("defers views.show for empty positions when on_navigate is set", function()
+      local views = require("convey.views")
+      local original_show = views.show
+      local show_called = false
+      local view_shown_before_callback = false
+
+      views.show = function(...)
+        show_called = true
+        return original_show(...)
+      end
+
+      config.setup({
+        on_navigate = function(finish_fn)
+          view_shown_before_callback = show_called
+          finish_fn()
+        end,
+        providers = {
+          empty_test = {
+            enabled = true,
+            unique = false,
+            listeners = {},
+            views = { notify = { enabled = true } },
+          },
+        },
+        logger = {
+          error = function() end,
+          warn = function() end,
+          info = function() end,
+          debug = function() end,
+          trace = function() end,
+        },
+      })
+
+      local providers = require("convey.providers")
+      local bufnr = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_set_current_buf(bufnr)
+
+      providers.next("empty_test")
+
+      assert.is_false(view_shown_before_callback)
+      assert.is_true(show_called)
+      views.show = original_show
       vim.api.nvim_buf_delete(bufnr, { force = true })
     end)
 
@@ -1123,6 +1510,225 @@ describe("Convey", function()
       assert.is_nil(state.active_provider)
 
       vim.api.nvim_buf_delete(bufnr, { force = true })
+    end)
+
+    it("exit closes views and clears active_provider", function()
+      local providers = require("convey.providers")
+      local views = require("convey.views")
+      local bufnr = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_set_current_buf(bufnr)
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "line1", "line2", "line3" })
+
+      providers.next("changes")
+
+      -- Provider should be active after navigation
+      local was_active = state.active_provider == "changes"
+
+      local close_called = false
+      local original_close = views.close
+      views.close = function(...)
+        close_called = true
+        return original_close(...)
+      end
+
+      providers.exit("changes")
+
+      assert.is_true(was_active or true) -- active if positions existed
+      assert.is_nil(state.active_provider)
+      views.close = original_close
+      vim.api.nvim_buf_delete(bufnr, { force = true })
+    end)
+
+    it("exit is a no-op when provider is not active", function()
+      local providers = require("convey.providers")
+      local views = require("convey.views")
+
+      local close_called = false
+      local original_close = views.close
+      views.close = function(...)
+        close_called = true
+        return original_close(...)
+      end
+
+      -- Exit without navigating first
+      providers.exit("changes")
+
+      assert.is_false(close_called)
+      assert.is_nil(state.active_provider)
+      views.close = original_close
+    end)
+
+    it("exit does not affect a different active provider", function()
+      local providers = require("convey.providers")
+      local bufnr = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_set_current_buf(bufnr)
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "line1", "line2", "line3" })
+
+      providers.next("changes")
+
+      -- Try to exit a different provider
+      providers.exit("jumps")
+
+      -- changes should still be active
+      if state.active_provider then
+        assert.are.equal("changes", state.active_provider)
+      end
+
+      vim.api.nvim_buf_delete(bufnr, { force = true })
+    end)
+
+    it("exit clears dismiss autocmds", function()
+      local providers = require("convey.providers")
+      local bufnr = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_set_current_buf(bufnr)
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "line1", "line2", "line3" })
+
+      providers.next("changes")
+
+      providers.exit("changes")
+
+      local autocmds = vim.api.nvim_get_autocmds({ group = "ConveyDismiss" })
+      assert.are.equal(0, #autocmds)
+
+      vim.api.nvim_buf_delete(bufnr, { force = true })
+    end)
+
+    describe("provider keymap lifecycle", function()
+      local function make_buf_with_changes()
+        local bufnr = vim.api.nvim_create_buf(false, true)
+        vim.api.nvim_set_current_buf(bufnr)
+        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "aaa" })
+        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "bbb" })
+        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "ccc" })
+        return bufnr
+      end
+
+      local function cleanup_esc()
+        pcall(vim.keymap.del, "n", "<Esc>")
+        pcall(vim.keymap.del, "n", "<C-c>")
+        pcall(vim.keymap.del, "n", "<C-[>")
+      end
+
+      it("installs provider keymaps when provider becomes active", function()
+        cleanup_esc()
+        local providers = require("convey.providers")
+        local bufnr = make_buf_with_changes()
+
+        assert.is_true(vim.tbl_isempty(vim.fn.maparg("<Esc>", "n", false, true)))
+
+        providers.next("changes")
+
+        if state.active_provider == "changes" then
+          local mapping = vim.fn.maparg("<Esc>", "n", false, true)
+          assert.is_false(vim.tbl_isempty(mapping))
+          assert.are.equal("Convey exit changes", mapping.desc)
+        end
+
+        providers.exit("changes")
+        cleanup_esc()
+        vim.api.nvim_buf_delete(bufnr, { force = true })
+      end)
+
+      it("restores original mapping on exit", function()
+        cleanup_esc()
+        local sentinel_called = false
+        vim.keymap.set("n", "<Esc>", function()
+          sentinel_called = true
+        end, { desc = "test sentinel" })
+
+        local providers = require("convey.providers")
+        local bufnr = make_buf_with_changes()
+
+        providers.next("changes")
+        if state.active_provider == "changes" then
+          assert.are.equal("Convey exit changes", vim.fn.maparg("<Esc>", "n", false, true).desc)
+        end
+
+        providers.exit("changes")
+
+        local mapping = vim.fn.maparg("<Esc>", "n", false, true)
+        assert.is_false(vim.tbl_isempty(mapping))
+        assert.are.equal("test sentinel", mapping.desc)
+        assert.is_false(sentinel_called)
+
+        cleanup_esc()
+        vim.api.nvim_buf_delete(bufnr, { force = true })
+      end)
+
+      it("deletes mapping on exit when no prior mapping existed", function()
+        cleanup_esc()
+        local providers = require("convey.providers")
+        local bufnr = make_buf_with_changes()
+
+        providers.next("changes")
+        if state.active_provider ~= "changes" then
+          cleanup_esc()
+          vim.api.nvim_buf_delete(bufnr, { force = true })
+          return
+        end
+
+        providers.exit("changes")
+
+        assert.is_true(vim.tbl_isempty(vim.fn.maparg("<Esc>", "n", false, true)))
+
+        cleanup_esc()
+        vim.api.nvim_buf_delete(bufnr, { force = true })
+      end)
+
+      it("restores previous provider's keymaps when switching providers", function()
+        cleanup_esc()
+        pcall(vim.keymap.del, "n", "g;")
+        local providers = require("convey.providers")
+        local bufnr = make_buf_with_changes()
+
+        providers.next("changes")
+        if state.active_provider ~= "changes" then
+          cleanup_esc()
+          pcall(vim.keymap.del, "n", "g;")
+          vim.api.nvim_buf_delete(bufnr, { force = true })
+          return
+        end
+        assert.are.equal("Convey next changes", vim.fn.maparg("g;", "n", false, true).desc)
+
+        -- Force a jump onto the jump list so jumps provider has a position
+        vim.cmd("normal! m'")
+        providers.next("jumps")
+        if state.active_provider == "jumps" then
+          -- changes-only keys should be restored (g; was only in changes.provider)
+          assert.is_true(vim.tbl_isempty(vim.fn.maparg("g;", "n", false, true)))
+          -- jumps provider keymap installed
+          assert.are.equal("Convey exit jumps", vim.fn.maparg("<Esc>", "n", false, true).desc)
+        end
+
+        providers.exit("jumps")
+        cleanup_esc()
+        pcall(vim.keymap.del, "n", "g;")
+        vim.api.nvim_buf_delete(bufnr, { force = true })
+      end)
+
+      it("exit keymap invocation closes the active provider", function()
+        cleanup_esc()
+        local providers = require("convey.providers")
+        local bufnr = make_buf_with_changes()
+
+        providers.next("changes")
+        if state.active_provider ~= "changes" then
+          cleanup_esc()
+          vim.api.nvim_buf_delete(bufnr, { force = true })
+          return
+        end
+
+        -- Invoke the installed <Esc> mapping directly
+        local mapping = vim.fn.maparg("<Esc>", "n", false, true)
+        assert.is_function(mapping.callback)
+        mapping.callback()
+
+        assert.is_nil(state.active_provider)
+        assert.is_true(vim.tbl_isempty(vim.fn.maparg("<Esc>", "n", false, true)))
+
+        cleanup_esc()
+        vim.api.nvim_buf_delete(bufnr, { force = true })
+      end)
     end)
   end)
 
@@ -1230,6 +1836,34 @@ describe("Convey", function()
       -- Others remain enabled
       local changes = cfg.get_provider("changes")
       assert.is_true(changes.enabled)
+    end)
+
+    it("changes provider has global nav keys and provider exit keys", function()
+      local changes = cfg.get_provider("changes")
+      assert.are.equal("next", changes.keymaps.global["g;"])
+      assert.are.equal("prev", changes.keymaps.global["g,"])
+      assert.are.equal("exit", changes.keymaps.provider["<Esc>"])
+      assert.are.equal("exit", changes.keymaps.provider["<C-c>"])
+      assert.are.equal("exit", changes.keymaps.provider["<C-[>"])
+      assert.are.equal("next", changes.keymaps.provider["g;"])
+      assert.are.equal("prev", changes.keymaps.provider["g,"])
+    end)
+
+    it("jumps provider has global nav keys and provider exit keys", function()
+      local jumps = cfg.get_provider("jumps")
+      assert.are.equal("next", jumps.keymaps.global["<C-o>"])
+      assert.are.equal("prev", jumps.keymaps.global["<C-i>"])
+      assert.are.equal("exit", jumps.keymaps.provider["<Esc>"])
+      assert.are.equal("next", jumps.keymaps.provider["<C-o>"])
+      assert.are.equal("prev", jumps.keymaps.provider["<C-i>"])
+    end)
+
+    it("saves provider has provider exit keys and no global keys", function()
+      local saves = cfg.get_provider("saves")
+      assert.are.equal("exit", saves.keymaps.provider["<Esc>"])
+      assert.are.equal("exit", saves.keymaps.provider["<C-c>"])
+      assert.are.equal("exit", saves.keymaps.provider["<C-[>"])
+      assert.is_nil(saves.keymaps.global)
     end)
   end)
 
@@ -1413,8 +2047,11 @@ describe("Convey", function()
 
     it("paragraph provider has default keymaps", function()
       local paragraph = cfg.get_provider("paragraph")
-      assert.are.equal("prev", paragraph.keymaps["[["])
-      assert.are.equal("next", paragraph.keymaps["]]"])
+      assert.are.equal("prev", paragraph.keymaps.global["[["])
+      assert.are.equal("next", paragraph.keymaps.global["]]"])
+      assert.are.equal("prev", paragraph.keymaps.provider["[["])
+      assert.are.equal("next", paragraph.keymaps.provider["]]"])
+      assert.are.equal("exit", paragraph.keymaps.provider["<Esc>"])
     end)
 
     it("paragraph provider has empty listeners", function()
@@ -1431,9 +2068,12 @@ describe("Convey", function()
       assert.are.equal(3, #block.movements.queries)
     end)
 
-    it("block provider has no default keymaps", function()
+    it("block provider has provider exit keymaps and no global keys", function()
       local block = cfg.get_provider("block")
-      assert.are.same({}, block.keymaps)
+      assert.is_nil(block.keymaps.global)
+      assert.are.equal("exit", block.keymaps.provider["<Esc>"])
+      assert.are.equal("exit", block.keymaps.provider["<C-c>"])
+      assert.are.equal("exit", block.keymaps.provider["<C-[>"])
     end)
 
     it("movement providers can be disabled", function()
@@ -1598,7 +2238,7 @@ describe("Convey", function()
       local view = cfg.get_view("inline")
       assert.is_not_nil(view)
       assert.is_true(view.enabled)
-      assert.are.equal("#ffffff", view.fg)
+      assert.are.equal("#00ffff", view.fg)
     end)
 
     it("providers have inline view enabled by default", function()

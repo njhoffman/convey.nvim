@@ -73,6 +73,7 @@ Range fields (`end_lnum`, `end_col`) are emitted by the `yanks`, `pastes`, and `
 
 - `:ConveyNext <provider>` -- navigate to next (older) position
 - `:ConveyPrev <provider>` -- navigate to previous (newer) position
+- `:ConveyExit <provider>` -- deactivate provider, close views
 - `:ConveyStatus` -- interactive status popup with expand/collapse
 
 ## Development
@@ -104,11 +105,11 @@ require("convey").setup({
     inline = { enabled = true, fg = "#ffffff" },
   },
   providers = {
-    changes = { enabled = true, unique = true, listeners = { "changes" }, keymaps = { ["g;"] = "next", ["g,"] = "prev" }, views = { notify = { enabled = true } } },
-    jumps   = { enabled = true, unique = true, listeners = { "jumps" },   keymaps = { ["<C-o>"] = "next", ["<C-i>"] = "prev" }, views = { notify = { enabled = true } } },
-    visual  = { enabled = true, unique = true, on_navigate = nil, listeners = { "pastes", "yanks", "selections" }, keymaps = { ["gv"] = "next", ["gV"] = "prev" }, views = { notify = { enabled = true } } },
+    changes = { enabled = true, unique = true, listeners = { "changes" }, keymaps = { ["g;"] = "next", ["g,"] = "prev", ["<Esc>"] = "exit", ["<C-c>"] = "exit", ["<C-[>"] = "exit" }, views = { notify = { enabled = true } } },
+    jumps   = { enabled = true, unique = true, listeners = { "jumps" },   keymaps = { ["<C-o>"] = "next", ["<C-i>"] = "prev", ["<Esc>"] = "exit", ["<C-c>"] = "exit", ["<C-[>"] = "exit" }, views = { notify = { enabled = true } } },
+    visual  = { enabled = true, unique = true, on_navigate = nil, listeners = { "pastes", "yanks", "selections" }, keymaps = { ["gv"] = "next", ["gV"] = "prev", ["<Esc>"] = "exit", ["<C-c>"] = "exit", ["<C-[>"] = "exit" }, views = { notify = { enabled = true } } },
     saves     = { enabled = true, unique = false, listeners = { "writes" }, views = { notify = { enabled = true } } },
-    paragraph = { enabled = true, unique = true, listeners = {}, movements = { motions = { next = "]]", prev = "[[" } }, keymaps = { ["[["] = "prev", ["]]"] = "next" } },
+    paragraph = { enabled = true, unique = true, listeners = {}, movements = { motions = { next = "]]", prev = "[[" } }, keymaps = { ["[["] = "prev", ["]]"] = "next", ["<Esc>"] = "exit", ["<C-c>"] = "exit", ["<C-[>"] = "exit" } },
     block     = { enabled = true, unique = true, listeners = {}, movements = { queries = { "@block.outer", "@conditional.outer", "@loop.outer" } }, keymaps = {} },
   },
 })
@@ -117,14 +118,18 @@ require("convey").setup({
 ### Provider options
 
 - `enabled = false` disables a provider (skips listener init, shows as disabled in ConveyStatus)
+- `cycle = true` wraps navigation: `next` past the last position jumps to the first, `prev` before the first jumps to the last. Default `false` (clamps at bounds).
 - `on_navigate = function(pos)` (provider-level) called after cursor jump but before view show/dismiss setup. Receives the navigated `ConveyPosition`. Used by the visual provider to reselect the range via `setpos("'<")/setpos("'>")` + `normal! gv`.
-- `on_navigate` (top-level) replaces the default `vim.schedule(finish)` navigation completion handler. Receives a single `finish_fn` callback that must be called to finalize navigation (setup dismiss autocmds, clear navigating flag). Useful for delaying completion until scroll animations finish.
+- `on_navigate` (top-level) replaces the default `vim.schedule(finish)` navigation completion handler. Receives a single `finish_fn` callback that must be called to finalize navigation (show views, setup dismiss autocmds, clear navigating flag). Views are deferred until `finish_fn` is called, which prevents rendering during scroll animations.
+- When both `on_navigate` callbacks are set, the top-level runs first; only after it invokes `finish_fn` does the provider-level `on_navigate(pos)` fire (followed by view show and dismiss setup). This lets the provider callback (e.g. visual reselect) land after scroll animations complete.
+- `keymaps` supports three actions: `"next"`, `"prev"`, and `"exit"`. Exit keymaps (`<Esc>`, `<C-c>`, `<C-[>` by default) close all views and deactivate the provider. The provider remains inactive until the next `next`/`prev` keymap or command.
 
 ## Non-obvious patterns
 
 These cross-module behaviors are easy to get wrong:
 
-- **Navigating flag guard** (`providers.lua`): Module-level `navigating` boolean prevents dismiss autocmds from firing during navigation (since `setpos` triggers CursorMoved). Must be cleared in `finish_navigate()` via `vim.schedule` or custom `on_navigate`.
+- **Navigating flag guard** (`providers.lua`): Module-level `navigating` boolean prevents dismiss autocmds from firing during navigation (since `setpos` triggers CursorMoved). Cleared after views are shown and dismiss autocmds are set up, either via `vim.schedule` or the custom `on_navigate` callback.
+- **View dismiss via CursorMoved** (`providers.lua`): Views are dismissed by CursorMoved/InsertEnter/CmdlineEnter autocmds, not by detecting specific keys. The `exit` keymap action provides explicit dismissal via `providers.exit()`, which closes views, clears `active_provider`, and removes dismiss autocmds. Navigation does not add to the jump list (`keepjumps`).
 - **Two listener categories**: Snapshot listeners (changes, jumps) have no-op init/destroy and fetch fresh data on each call via `vim.fn.getchangelist()`/`vim.fn.getjumplist()`. Event listeners (selections, yanks, pastes, writes) store to module-level tables via autocommands or keymaps.
 - **Paste listener uses keymaps, not autocommands**: Unlike other event listeners, pastes overrides `p`/`P` keymaps because `TextYankPost` does not fire for put operations. The keymaps use `feedkeys` with `"nx"` (noremap + execute immediately) to run the built-in paste, then record `'[`/`']` marks.
 - **Movement timestamp hack**: Positions from movements are sorted by lnum ascending, then assigned timestamps as `total - i + 1` so they survive the descending timestamp sort in `refresh_positions()` without losing position order. Curr is set to the last position at or before the cursor line.
