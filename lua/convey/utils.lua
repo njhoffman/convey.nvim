@@ -117,6 +117,65 @@ M.is_multi_buffer = function(positions)
   return false
 end
 
+--- Format a buffer's full path with HOME and nvim-config substitutions.
+--- Anchors substitutions at the start of the path so mid-string matches don't trigger.
+--- Returns "" for unnamed or invalid buffers (caller decides how to render).
+--- @param bufnr number
+--- @param home string Resolved $HOME (no trailing slash)
+--- @param nvim_cfg string Resolved $HOME/.config/nvim (no trailing slash)
+--- @return string
+M.format_buf_path = function(bufnr, home, nvim_cfg)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return ""
+  end
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  if name == "" then
+    return ""
+  end
+  local nvim_prefix = "^" .. vim.pesc(nvim_cfg) .. "/"
+  local home_prefix = "^" .. vim.pesc(home) .. "/"
+  name = name:gsub(nvim_prefix, "./")
+  name = name:gsub(home_prefix, "~/")
+  return name
+end
+
+--- Compute (n_lines, n_chars) for a 1-indexed-inclusive coordinate range.
+--- Returns (nil, nil) if range is missing or zero-width.
+--- Returns (n_lines, nil) for linewise V-mode (end_col == vim.v.maxcol).
+--- @param bufnr number
+--- @param lnum number 1-indexed start line
+--- @param col number 1-indexed start col (inclusive)
+--- @param end_lnum number 1-indexed end line
+--- @param end_col number 1-indexed end col (inclusive), or vim.v.maxcol for linewise
+--- @return number|nil n_lines
+--- @return number|nil n_chars
+M.range_size = function(bufnr, lnum, col, end_lnum, end_col)
+  if not end_lnum or not end_col then
+    return nil, nil
+  end
+  if end_lnum == lnum and end_col == col then
+    return nil, nil
+  end
+  local n_lines = end_lnum - lnum + 1
+  if end_col == vim.v.maxcol then
+    return n_lines, nil
+  end
+  -- 1-indexed inclusive -> 0-indexed: start_col = col-1, end_col_excl = end_col
+  local ok, lines =
+    pcall(vim.api.nvim_buf_get_text, bufnr, lnum - 1, col - 1, end_lnum - 1, end_col, {})
+  if not ok or not lines then
+    return n_lines, nil
+  end
+  local n_chars = 0
+  for i, line in ipairs(lines) do
+    n_chars = n_chars + vim.fn.strchars(line)
+    if i < #lines then
+      n_chars = n_chars + 1
+    end
+  end
+  return n_lines, n_chars
+end
+
 --- Get a truncated tail filename for a position's buffer.
 --- @param pos table ConveyPosition
 --- @param max_len number|nil Maximum length (default 15)

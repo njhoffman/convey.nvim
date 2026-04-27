@@ -1,6 +1,6 @@
 local M = {}
 
-M.version = "0.2.0"
+M.version = "0.3.0"
 
 local default_logger = {
   error = function(msg)
@@ -34,10 +34,25 @@ local defaults = {
       enabled = true,
       lines_before = 8,
       lines_after = 3,
+      hl = {
+        icon = "Special",
+        number = "Number",
+        text = "Comment",
+      },
     },
     inline = {
       enabled = true,
       fg = "#00ffff",
+      bg = nil,
+      align = "eol",
+      padding = 2,
+      delay = 100,
+      template = {
+        { "{provider} ", "ConveyInline" },
+        { "[{curr}/{total}] ", "ConveyInline" },
+        { "{prev_key}\u{2191} ", "ConveyInline" },
+        { "{next_key}\u{2193}", "ConveyInline" },
+      },
     },
   },
   logger = default_logger,
@@ -166,8 +181,23 @@ local defaults = {
 
 M.values = vim.deepcopy(defaults)
 
+local listener_to_providers = nil
+
+local build_inverse_map = function()
+  listener_to_providers = {}
+  for provider_name, p in pairs(M.values.providers) do
+    if p.listeners then
+      for _, l in ipairs(p.listeners) do
+        listener_to_providers[l] = listener_to_providers[l] or {}
+        table.insert(listener_to_providers[l], provider_name)
+      end
+    end
+  end
+end
+
 M.setup = function(opts)
   M.values = vim.tbl_deep_extend("force", defaults, opts or {})
+  listener_to_providers = nil
 end
 
 M.get = function()
@@ -184,6 +214,17 @@ end
 
 M.log = function()
   return M.values.logger
+end
+
+--- Return the list of provider names that include the given listener.
+--- Cached on first call after setup.
+--- @param listener_name string
+--- @return string[]
+M.get_providers_for_listener = function(listener_name)
+  if not listener_to_providers then
+    build_inverse_map()
+  end
+  return listener_to_providers[listener_name] or {}
 end
 
 return M

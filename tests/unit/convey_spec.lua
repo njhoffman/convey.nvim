@@ -1768,6 +1768,33 @@ describe("Convey", function()
       assert.are.equal(2, changes.views.notify.lines_after)
     end)
 
+    it("notify hl defaults to Comment for the text column", function()
+      local view = cfg.get_view("notify")
+      assert.is_table(view.hl)
+      assert.are.equal("Comment", view.hl.text)
+      assert.are.equal("Special", view.hl.icon)
+      assert.are.equal("Number", view.hl.number)
+    end)
+
+    it("notify hl can be customized globally", function()
+      cfg.setup({
+        views = { notify = { hl = { text = "MyText", icon = "MyIcon" } } },
+      })
+      local view = cfg.get_view("notify")
+      assert.are.equal("MyText", view.hl.text)
+      assert.are.equal("MyIcon", view.hl.icon)
+    end)
+
+    it("notify hl can be overridden per provider", function()
+      cfg.setup({
+        providers = {
+          changes = { views = { notify = { hl = { text = "ProviderText" } } } },
+        },
+      })
+      local changes = cfg.get_provider("changes")
+      assert.are.equal("ProviderText", changes.views.notify.hl.text)
+    end)
+
     it("visual provider has on_navigate by default", function()
       local visual = cfg.get_provider("visual")
       assert.is_function(visual.on_navigate)
@@ -2107,6 +2134,7 @@ describe("Convey", function()
           debug = function() end,
           trace = function() end,
         },
+        views = { inline = { delay = 0 } },
       })
       inline_view = require("convey.views.inline")
       state = require("convey.state")
@@ -2315,6 +2343,7 @@ describe("Convey", function()
           debug = function() end,
           trace = function() end,
         },
+        views = { inline = { delay = 0 } },
       })
     end)
 

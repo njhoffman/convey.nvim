@@ -18,9 +18,13 @@ local function record_paste()
     end_col = to[3] - 1,
     time = os.time(),
   })
-  require("convey.config")
-    .log()
-    .trace("[convey] pastes: tracked paste at " .. from[2] .. ":" .. from[3])
+  require("convey.log").tracked(M.name, "paste", {
+    bufnr = bufnr,
+    lnum = from[2],
+    col = from[3],
+    end_lnum = to[2],
+    end_col = to[3],
+  })
 end
 
 -- TextYankPost does not fire for paste/put operations (only yank/delete/change).
@@ -49,6 +53,7 @@ M.destroy = function()
   end
   mapped_keys = {}
   stored = {}
+  require("convey.log").reset()
 end
 
 --- @param bufnr number

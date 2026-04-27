@@ -28,9 +28,13 @@ M.init = function(augroup)
         end_col = to[3] - 1,
         time = os.time(),
       })
-      require("convey.config")
-        .log()
-        .trace("[convey] yanks: tracked yank at " .. from[2] .. ":" .. from[3])
+      require("convey.log").tracked(M.name, "yank", {
+        bufnr = bufnr,
+        lnum = from[2],
+        col = from[3],
+        end_lnum = to[2],
+        end_col = to[3],
+      })
     end,
   })
 end
@@ -41,6 +45,7 @@ M.destroy = function()
     autocmd_id = nil
   end
   stored = {}
+  require("convey.log").reset()
 end
 
 --- @param bufnr number

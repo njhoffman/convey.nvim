@@ -75,9 +75,13 @@ M.init = function(augroup)
         time = os.time(),
       })
       last_hash = hash
-      require("convey.config")
-        .log()
-        .trace("[convey] selections: tracked selection at " .. pos.from[2] .. ":" .. pos.from[3])
+      require("convey.log").tracked(M.name, "selection", {
+        bufnr = bufnr,
+        lnum = pos.from[2],
+        col = pos.from[3],
+        end_lnum = pos.to[2],
+        end_col = pos.to[3],
+      })
     end,
   })
 end
@@ -89,6 +93,7 @@ M.destroy = function()
   end
   stored = {}
   last_hash = nil
+  require("convey.log").reset()
 end
 
 --- @param bufnr number

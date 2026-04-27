@@ -6,8 +6,36 @@ local listeners = require("convey.listeners")
 local default_highlights = {
   icon = "Special",
   number = "Number",
-  string = "String",
+  text = "Comment",
 }
+
+local resolve_hl = function(opts)
+  local view_config = config.get_view("notify") or {}
+  local provider_notify = (opts.views and opts.views.notify) or {}
+  local global_hl = view_config.hl or {}
+  local provider_hl = provider_notify.hl or {}
+  return {
+    icon = provider_hl.icon or global_hl.icon or default_highlights.icon,
+    number = provider_hl.number or global_hl.number or default_highlights.number,
+    text = provider_hl.text or global_hl.text or default_highlights.text,
+  }
+end
+
+--- Disable syntax/treesitter for the notify popup buffer so a hanging quote in a
+--- text preview does not bleed across the rest of the popup. Our explicit
+--- highlights still apply via extmarks.
+local disable_buffer_syntax = function(wid)
+  if not wid or not vim.api.nvim_win_is_valid(wid) then
+    return
+  end
+  local bufnr = vim.api.nvim_win_get_buf(wid)
+  pcall(function()
+    vim.bo[bufnr].syntax = "OFF"
+  end)
+  pcall(function()
+    vim.treesitter.stop(bufnr)
+  end)
+end
 
 --- Truncate a position list to a window around the current index.
 --- @param positions table[] Position list
@@ -63,7 +91,7 @@ local notify_handler = function(provider_name, positions, curr_idx, opts)
 
   local truncated = truncate_positions(positions, curr_idx, opts)
 
-  local hls = default_highlights
+  local hls = resolve_hl(opts)
   local rows = {}
   local use_range = utils.has_ranges(positions)
   local show_prefix = opts.listeners and #opts.listeners > 1
@@ -109,7 +137,7 @@ local notify_handler = function(provider_name, positions, curr_idx, opts)
         .. string.rep(" ", max_col_w - #col_s)
       table.insert(row, { pos_s, hls.number })
     end
-    table.insert(row, { line_text, hls.string })
+    table.insert(row, { line_text, hls.text })
     table.insert(rows, row)
   end
 
@@ -145,8 +173,10 @@ local notify_handler = function(provider_name, positions, curr_idx, opts)
     end,
     on_open = function(wid)
       state.notify_wid = wid
+      disable_buffer_syntax(wid)
     end,
     on_replace = function(wid)
+      disable_buffer_syntax(wid)
       vim.defer_fn(function()
         if vim.api.nvim_win_is_valid(wid) then
           local bufnr = vim.api.nvim_win_get_buf(wid)
